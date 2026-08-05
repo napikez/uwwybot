@@ -3,16 +3,17 @@ import random
 import os
 import json
 import time
-from pyrogram import Client, filters
-from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.enums import ParseMode
-from aiohttp import web
 
-# ===== ФИКС ДЛЯ PYTHON =====
+# ===== ФИКС ДЛЯ НОВЫХ ВЕРСИЙ PYTHON (ДО ИМПОРТА PYROGRAM) =====
 try:
     asyncio.get_running_loop()
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
+
+from pyrogram import Client, filters
+from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.enums import ParseMode
+from aiohttp import web
 
 # ===== ВЕБ-СЕРВЕР ДЛЯ RENDER =====
 async def health_check(request):
@@ -35,7 +36,7 @@ API_ID = int(os.getenv("API_ID", 37635168))
 API_HASH = os.getenv("API_HASH", "47e36b7f99b31f55be222b4200ea94ca")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# Твой ID администратора уже вписан сюда
+# Твой ID администратора
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "816984329").split(",")]
 
 ALLOWED_USERS_FILE = "allowed_users.json"
@@ -65,7 +66,6 @@ def save_json(filename, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def load_allowed_users():
-    # Твой ID также добавлен в список пользователей по умолчанию
     default_users = [816984329]
     users = load_json(ALLOWED_USERS_FILE, default_users)
     return [int(u) for u in users]
@@ -154,7 +154,7 @@ async def inline_uwu(client, query):
                 InlineQueryResultArticle(
                     title="❌ У вас нет доступа!",
                     description="Обратитесь к администратору для выдачи прав.",
-                    input_message_content=InputTextMessageContent("❌ У меня нет доступа.") # Отправляется без тегов бота
+                    input_message_content=InputTextMessageContent("❌ У меня нет доступа.") 
                 )
             ],
             cache_time=0
