@@ -1,7 +1,6 @@
 import asyncio
 import random
 import os
-import sys
 import json
 import time
 from pyrogram import Client, filters
@@ -35,7 +34,9 @@ async def start_web_server():
 API_ID = int(os.getenv("API_ID", 37635168))
 API_HASH = os.getenv("API_HASH", "47e36b7f99b31f55be222b4200ea94ca")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "8361641777").split(",")]
+
+# Твой ID администратора уже вписан сюда
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "816984329").split(",")]
 
 ALLOWED_USERS_FILE = "allowed_users.json"
 
@@ -64,7 +65,8 @@ def save_json(filename, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def load_allowed_users():
-    default_users = [8361641777]
+    # Твой ID также добавлен в список пользователей по умолчанию
+    default_users = [816984329]
     users = load_json(ALLOWED_USERS_FILE, default_users)
     return [int(u) for u in users]
 
