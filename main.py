@@ -296,15 +296,27 @@ async def callback_handler(client, query: CallbackQuery):
             mode = load_premium_mode().get(str(user_id), False)
             saved = load_premium_emojis().get(str(user_id), [])
             test_text = cringe_text("Привет, это тестовое сообщение", user_id)
-            await client.send_message(user_id, test_text, parse_mode=ParseMode.HTML)
+            sent = await client.send_message(user_id, test_text, parse_mode=ParseMode.HTML)
+
+            sent_entities = sent.entities or []
+            custom_count = sum(1 for e in sent_entities if e.type == MessageEntityType.CUSTOM_EMOJI)
+            found_ids = [str(e.custom_emoji_id) for e in sent_entities if e.type == MessageEntityType.CUSTOM_EMOJI]
 
             if mode and saved:
-                status = f"Премиум режим ВКЛ, сохранено эмодзи: {len(saved)}. Если выше видны розовые/кастомные смайлы — всё работает ✅"
+                base_status = f"Премиум режим ВКЛ, сохранено эмодзи: {len(saved)}."
             elif mode and not saved:
-                status = "Премиум режим ВКЛ, но эмодзи не добавлены — используются обычные смайлы. Добавь эмодзи кнопкой выше."
+                base_status = "Премиум режим ВКЛ, но эмодзи не добавлены — используются обычные смайлы."
             else:
-                status = "Премиум режим ВЫКЛ — используются обычные смайлы."
-            await query.answer(status, show_alert=True)
+                base_status = "Премиум режим ВЫКЛ — используются обычные смайлы."
+
+            debug_status = f"\nTelegram подтвердил custom-emoji entities в отправленном сообщении: {custom_count}."
+            if custom_count and found_ids:
+                debug_status += f"\nID: {', '.join(found_ids[:3])}"
+            elif mode and saved and custom_count == 0:
+                debug_status += "\n⚠️ Telegram НЕ распознал наши эмодзи как custom emoji — значит сами ID невалидны или тег не распарсился."
+
+            await query.answer(base_status + debug_status, show_alert=True)
+            add_bot_log(f"Тест премиум для {user_id}: entities_confirmed={custom_count}, saved={len(saved)}, mode={mode}")
 
         elif data == "add_emojis":
             auth_steps[user_id] = {"step": "wait_add_emojis"}
@@ -400,7 +412,7 @@ async def fsm_handler(client, message: Message):
             f"Премиум режим включён автоматически! 🌟",
             reply_markup=kb
         )
-        add_bot_log(f"Юзер {user_id} добавил {len(emoji_ids)} премиум-эмодзи")
+        add_bot_log(f"Юзер {user_id} добавил {len(emoji_ids)} премиум-эмодзи: {emoji_ids}")
         del auth_steps[user_id]
 
     elif step == "wait_add_start_text":
