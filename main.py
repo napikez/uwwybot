@@ -10,12 +10,14 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
+import emoji as emoji_lib
+
 from pyrogram import Client, filters
 from pyrogram.types import (
     InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup,
     InlineKeyboardButton, CallbackQuery, Message
 )
-from pyrogram.enums import ParseMode, MessageEntityType
+from pyrogram.enums import ParseMode
 from aiohttp import web
 
 # ===== ВЕБ-СЕРВЕР ДЛЯ RENDER =====
@@ -43,9 +45,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "816984329").split(",")]
 
 # ===== ФАЙЛЫ БД =====
-PREMIUM_EMOJIS_FILE = "premium_emojis.json"   # { "user_id": ["id1", "id2", ...] }
-PREMIUM_MODE_FILE = "premium_mode.json"       # { "user_id": true/false }
-SETTINGS_FILE = "bot_settings.json"           # { "start_text": str|None, "start_gif": str|None }
+USER_EMOJIS_FILE = "user_emojis.json"   # { "user_id": ["😀", "🔥", ...] }
+SETTINGS_FILE = "bot_settings.json"     # { "start_text": str|None, "start_gif": str|None }
 
 bot_logs = []
 auth_steps = {}
@@ -71,17 +72,11 @@ def save_json(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def load_premium_emojis():
-    return load_json(PREMIUM_EMOJIS_FILE, {})
+def load_user_emojis():
+    return load_json(USER_EMOJIS_FILE, {})
 
-def save_premium_emojis(data):
-    save_json(PREMIUM_EMOJIS_FILE, data)
-
-def load_premium_mode():
-    return load_json(PREMIUM_MODE_FILE, {})
-
-def save_premium_mode(data):
-    save_json(PREMIUM_MODE_FILE, data)
+def save_user_emojis(data):
+    save_json(USER_EMOJIS_FILE, data)
 
 def load_settings():
     return load_json(SETTINGS_FILE, {"start_text": None, "start_gif": None})
@@ -130,14 +125,16 @@ def get_random_action():
         last_actions.pop(0)
     return choice
 
+def extract_emojis(text):
+    """Достаёт отдельные юникод-эмодзи из текста (корректно разбивает ZWJ-последовательности, флаги и т.д.)."""
+    if not text:
+        return []
+    return [item["emoji"] for item in emoji_lib.emoji_list(text)]
+
 def get_user_emoji_pool(user_id):
-    """Возвращает пул эмодзи для конкретного юзера: премиум (если включен и есть) или дефолтный."""
-    mode = load_premium_mode()
-    if mode.get(str(user_id), False):
-        premium = load_premium_emojis().get(str(user_id), [])
-        if premium:
-            return [f'<emoji id={eid}>✨</emoji>' for eid in premium]
-    return DEFAULT_EMOJIS
+    """Возвращает пул эмодзи для юзера: дефолтные + его собственные добавленные (если есть)."""
+    custom = load_user_emojis().get(str(user_id), [])
+    return DEFAULT_EMOJIS + custom if custom else DEFAULT_EMOJIS
 
 def modify_word(w, emoji_pool):
     if len(w) < 2:
@@ -212,11 +209,7 @@ DEFAULT_START_TEXT = (
 
 def get_start_keyboard(user_id):
     buttons = []
-    mode = load_premium_mode().get(str(user_id), False)
-    mode_label = "🌟 Премиум режим: ВКЛ ✅" if mode else "🌟 Премиум режим: ВЫКЛ"
-    buttons.append([InlineKeyboardButton(mode_label, callback_data="toggle_premium")])
-    buttons.append([InlineKeyboardButton("➕ Добавить прем-эмодзи", callback_data="add_emojis")])
-    buttons.append([InlineKeyboardButton("🧪 Проверить премиум", callback_data="test_premium")])
+    buttons.append([InlineKeyboardButton("➕ Добавить эмодзи", callback_data="add_emojis")])
 
     if user_id in ADMIN_IDS:
         buttons.append([InlineKeyboardButton("📋 Логи", callback_data="logs")])
@@ -274,57 +267,13 @@ async def callback_handler(client, query: CallbackQuery):
                 # если исходное сообщение было гифкой (caption), текст не редактируется тем же методом
                 await query.message.edit_caption(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
-        elif data == "toggle_premium":
-            mode = load_premium_mode()
-            current = mode.get(str(user_id), False)
-            mode[str(user_id)] = not current
-            save_premium_mode(mode)
-
-            if not current and not load_premium_emojis().get(str(user_id)):
-                await query.answer("Премиум режим включён, но у тебя пока нет добавленных эмодзи! Добавь их кнопкой ниже 🌸", show_alert=True)
-            else:
-                await query.answer("Готово!")
-
-            kb = get_start_keyboard(user_id)
-            try:
-                await query.message.edit_reply_markup(reply_markup=kb)
-            except Exception:
-                pass
-            return  # answer уже вызван выше
-
-        elif data == "test_premium":
-            mode = load_premium_mode().get(str(user_id), False)
-            saved = load_premium_emojis().get(str(user_id), [])
-            test_text = cringe_text("Привет, это тестовое сообщение", user_id)
-            sent = await client.send_message(user_id, test_text, parse_mode=ParseMode.HTML)
-
-            sent_entities = sent.entities or []
-            custom_count = sum(1 for e in sent_entities if e.type == MessageEntityType.CUSTOM_EMOJI)
-            found_ids = [str(e.custom_emoji_id) for e in sent_entities if e.type == MessageEntityType.CUSTOM_EMOJI]
-
-            if mode and saved:
-                base_status = f"Премиум режим ВКЛ, сохранено эмодзи: {len(saved)}."
-            elif mode and not saved:
-                base_status = "Премиум режим ВКЛ, но эмодзи не добавлены — используются обычные смайлы."
-            else:
-                base_status = "Премиум режим ВЫКЛ — используются обычные смайлы."
-
-            debug_status = f"\nTelegram подтвердил custom-emoji entities в отправленном сообщении: {custom_count}."
-            if custom_count and found_ids:
-                debug_status += f"\nID: {', '.join(found_ids[:3])}"
-            elif mode and saved and custom_count == 0:
-                debug_status += "\n⚠️ Telegram НЕ распознал наши эмодзи как custom emoji — значит сами ID невалидны или тег не распарсился."
-
-            await query.answer(base_status + debug_status, show_alert=True)
-            add_bot_log(f"Тест премиум для {user_id}: entities_confirmed={custom_count}, saved={len(saved)}, mode={mode}")
-
         elif data == "add_emojis":
             auth_steps[user_id] = {"step": "wait_add_emojis"}
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="menu")]])
             await query.message.edit_text(
-                "<b>Добавление премиум-эмодзи</b>\n\n"
-                "Отправь одним сообщением все свои премиум-эмодзи подряд "
-                "(без запятых, пробелов и текста между ними) — я сам их распознаю и сохраню.",
+                "<b>Добавление эмодзи</b>\n\n"
+                "Отправь одним сообщением любые эмодзи подряд (можно вперемешку, без запятых) — "
+                "я их распознаю и буду использовать вместе с обычными в твоих уву-текстах.",
                 reply_markup=kb, parse_mode=ParseMode.HTML
             )
 
@@ -383,36 +332,27 @@ async def fsm_handler(client, message: Message):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("В меню", callback_data="menu")]])
 
     if step == "wait_add_emojis":
-        entities = message.entities or []
-        emoji_ids = []
-        for ent in entities:
-            if ent.type == MessageEntityType.CUSTOM_EMOJI and ent.custom_emoji_id:
-                emoji_ids.append(str(ent.custom_emoji_id))
+        found = extract_emojis(message.text or "")
 
-        if not emoji_ids:
+        if not found:
             await message.reply(
-                "Не нашёл ни одного премиум-эмодзи в сообщении! Пришли их ещё раз одним сообщением.",
+                "Не нашёл ни одного эмодзи в сообщении! Пришли их ещё раз одним сообщением.",
                 reply_markup=kb
             )
             return
 
-        premium = load_premium_emojis()
-        current = premium.get(str(user_id), [])
-        merged = list(dict.fromkeys(current + emoji_ids))  # без дублей, сохраняя порядок
-        premium[str(user_id)] = merged
-        save_premium_emojis(premium)
-
-        # автоматически включаем премиум режим
-        mode = load_premium_mode()
-        mode[str(user_id)] = True
-        save_premium_mode(mode)
+        data = load_user_emojis()
+        current = data.get(str(user_id), [])
+        merged = list(dict.fromkeys(current + found))  # без дублей, сохраняя порядок
+        data[str(user_id)] = merged
+        save_user_emojis(data)
 
         await message.reply(
-            f"✅ Добавлено эмодзи: {len(emoji_ids)} (всего сохранено: {len(merged)}).\n"
-            f"Премиум режим включён автоматически! 🌟",
+            f"✅ Добавлено эмодзи: {len(found)} (всего сохранено: {len(merged)}).\n"
+            f"Теперь они будут появляться в твоих уву-текстах! 🌸",
             reply_markup=kb
         )
-        add_bot_log(f"Юзер {user_id} добавил {len(emoji_ids)} премиум-эмодзи: {emoji_ids}")
+        add_bot_log(f"Юзер {user_id} добавил {len(found)} эмодзи: {found}")
         del auth_steps[user_id]
 
     elif step == "wait_add_start_text":
@@ -451,7 +391,7 @@ def run_bot():
         print("❌ Ошибка: Вставь BOT_TOKEN в код или добавь в переменные среды Render!")
         return
 
-    print("🚀 Уву-бот запускается в инлайн-режиме (доступ для всех + премиум-эмодзи)...")
+    print("🚀 Уву-бот запускается в инлайн-режиме (доступ для всех + свои эмодзи)...")
     loop = asyncio.get_event_loop()
     loop.create_task(start_web_server())
     app.run()
