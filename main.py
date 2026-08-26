@@ -216,6 +216,7 @@ def get_start_keyboard(user_id):
     mode_label = "🌟 Премиум режим: ВКЛ ✅" if mode else "🌟 Премиум режим: ВЫКЛ"
     buttons.append([InlineKeyboardButton(mode_label, callback_data="toggle_premium")])
     buttons.append([InlineKeyboardButton("➕ Добавить прем-эмодзи", callback_data="add_emojis")])
+    buttons.append([InlineKeyboardButton("🧪 Проверить премиум", callback_data="test_premium")])
 
     if user_id in ADMIN_IDS:
         buttons.append([InlineKeyboardButton("📋 Логи", callback_data="logs")])
@@ -227,15 +228,10 @@ def get_start_keyboard(user_id):
     return InlineKeyboardMarkup(buttons)
 
 async def build_start_content(client, user_id):
-    """Возвращает (text, gif_file_id_or_none) для команды /start."""
+    """Возвращает (menu_text, gif_file_id_or_none) — обычный текст меню для команды /start."""
     settings = load_settings()
     bot_info = await client.get_me()
-
-    if user_id in ADMIN_IDS:
-        text = DEFAULT_START_TEXT.format(username=bot_info.username)
-    else:
-        text = settings.get("start_text") or DEFAULT_START_TEXT.format(username=bot_info.username)
-
+    text = DEFAULT_START_TEXT.format(username=bot_info.username)
     gif = settings.get("start_gif")
     return text, gif
 
@@ -245,6 +241,14 @@ async def start_cmd(client, message: Message):
     if user_id in auth_steps:
         del auth_steps[user_id]
 
+    settings = load_settings()
+    promo_text = settings.get("start_text")
+
+    # Для обычных юзеров сначала кидаем рекламный текст (если он задан админом)
+    if user_id not in ADMIN_IDS and promo_text:
+        await message.reply(promo_text, parse_mode=ParseMode.HTML)
+
+    # А затем — обычное меню, как и раньше
     text, gif = await build_start_content(client, user_id)
     kb = get_start_keyboard(user_id)
 
@@ -287,6 +291,20 @@ async def callback_handler(client, query: CallbackQuery):
             except Exception:
                 pass
             return  # answer уже вызван выше
+
+        elif data == "test_premium":
+            mode = load_premium_mode().get(str(user_id), False)
+            saved = load_premium_emojis().get(str(user_id), [])
+            test_text = cringe_text("Привет, это тестовое сообщение", user_id)
+            await client.send_message(user_id, test_text, parse_mode=ParseMode.HTML)
+
+            if mode and saved:
+                status = f"Премиум режим ВКЛ, сохранено эмодзи: {len(saved)}. Если выше видны розовые/кастомные смайлы — всё работает ✅"
+            elif mode and not saved:
+                status = "Премиум режим ВКЛ, но эмодзи не добавлены — используются обычные смайлы. Добавь эмодзи кнопкой выше."
+            else:
+                status = "Премиум режим ВЫКЛ — используются обычные смайлы."
+            await query.answer(status, show_alert=True)
 
         elif data == "add_emojis":
             auth_steps[user_id] = {"step": "wait_add_emojis"}
