@@ -3,6 +3,8 @@ import random
 import os
 import json
 import time
+import re
+import traceback
 
 # ===== ФИКС ДЛЯ НОВЫХ ВЕРСИЙ PYTHON (ДО ИМПОРТА PYROGRAM) =====
 try:
@@ -10,7 +12,10 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-import emoji as emoji_lib
+try:
+    import emoji as emoji_lib
+except ImportError:
+    emoji_lib = None
 
 from pyrogram import Client, filters
 from pyrogram.types import (
@@ -129,7 +134,26 @@ def extract_emojis(text):
     """Достаёт отдельные юникод-эмодзи из текста (корректно разбивает ZWJ-последовательности, флаги и т.д.)."""
     if not text:
         return []
-    return [item["emoji"] for item in emoji_lib.emoji_list(text)]
+    if emoji_lib is not None:
+        try:
+            return [item["emoji"] for item in emoji_lib.emoji_list(text)]
+        except Exception:
+            add_bot_log(f"emoji_lib.emoji_list упал, использую запасной regex: {traceback.format_exc()}")
+    # запасной вариант, если библиотека не установлена/её метод недоступен
+    pattern = re.compile(
+        "["
+        "\U0001F1E6-\U0001F1FF"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F600-\U0001F64F"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA70-\U0001FAFF"
+        "\U00002600-\U000026FF"
+        "\U00002700-\U000027BF"
+        "]",
+        flags=re.UNICODE
+    )
+    return pattern.findall(text)
 
 def get_user_emoji_pool(user_id):
     """Возвращает пул эмодзи для юзера: дефолтные + его собственные добавленные (если есть)."""
@@ -331,58 +355,71 @@ async def fsm_handler(client, message: Message):
     step = state["step"]
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("В меню", callback_data="menu")]])
 
-    if step == "wait_add_emojis":
-        found = extract_emojis(message.text or "")
+    try:
+        if step == "wait_add_emojis":
+            found = extract_emojis(message.text or "")
+            add_bot_log(f"wait_add_emojis: юзер {user_id}, текст={message.text!r}, найдено={found}")
 
-        if not found:
+            if not found:
+                await message.reply(
+                    "Не нашёл ни одного эмодзи в сообщении! Пришли их ещё раз одним сообщением.",
+                    reply_markup=kb
+                )
+                return
+
+            data = load_user_emojis()
+            current = data.get(str(user_id), [])
+            merged = list(dict.fromkeys(current + found))  # без дублей, сохраняя порядок
+            data[str(user_id)] = merged
+            save_user_emojis(data)
+
             await message.reply(
-                "Не нашёл ни одного эмодзи в сообщении! Пришли их ещё раз одним сообщением.",
+                f"✅ Добавлено эмодзи: {len(found)} (всего сохранено: {len(merged)}).\n"
+                f"Теперь они будут появляться в твоих уву-текстах! 🌸",
                 reply_markup=kb
             )
-            return
-
-        data = load_user_emojis()
-        current = data.get(str(user_id), [])
-        merged = list(dict.fromkeys(current + found))  # без дублей, сохраняя порядок
-        data[str(user_id)] = merged
-        save_user_emojis(data)
-
-        await message.reply(
-            f"✅ Добавлено эмодзи: {len(found)} (всего сохранено: {len(merged)}).\n"
-            f"Теперь они будут появляться в твоих уву-текстах! 🌸",
-            reply_markup=kb
-        )
-        add_bot_log(f"Юзер {user_id} добавил {len(found)} эмодзи: {found}")
-        del auth_steps[user_id]
-
-    elif step == "wait_add_start_text":
-        if user_id not in ADMIN_IDS:
+            add_bot_log(f"Юзер {user_id} добавил {len(found)} эмодзи: {found}")
             del auth_steps[user_id]
-            return
-        new_text = message.text or message.caption
-        if not new_text:
-            await message.reply("Пришли текстовое сообщение!", reply_markup=kb)
-            return
-        settings = load_settings()
-        settings["start_text"] = new_text
-        save_settings(settings)
-        await message.reply("✅ Текст для /start обновлён!", reply_markup=kb, parse_mode=ParseMode.HTML)
-        add_bot_log(f"Админ {user_id} обновил текст /start")
-        del auth_steps[user_id]
 
-    elif step == "wait_add_gif":
-        if user_id not in ADMIN_IDS:
+        elif step == "wait_add_start_text":
+            if user_id not in ADMIN_IDS:
+                del auth_steps[user_id]
+                return
+            new_text = message.text or message.caption
+            if not new_text:
+                await message.reply("Пришли текстовое сообщение!", reply_markup=kb)
+                return
+            settings = load_settings()
+            settings["start_text"] = new_text
+            save_settings(settings)
+            await message.reply("✅ Текст для /start обновлён!", reply_markup=kb, parse_mode=ParseMode.HTML)
+            add_bot_log(f"Админ {user_id} обновил текст /start")
             del auth_steps[user_id]
-            return
-        if not message.animation:
-            await message.reply("Это не похоже на GIF! Пришли анимацию (GIF-файл).", reply_markup=kb)
-            return
-        settings = load_settings()
-        settings["start_gif"] = message.animation.file_id
-        save_settings(settings)
-        await message.reply("✅ GIF для /start обновлён!", reply_markup=kb)
-        add_bot_log(f"Админ {user_id} обновил GIF /start")
-        del auth_steps[user_id]
+
+        elif step == "wait_add_gif":
+            if user_id not in ADMIN_IDS:
+                del auth_steps[user_id]
+                return
+            if not message.animation:
+                await message.reply("Это не похоже на GIF! Пришли анимацию (GIF-файл).", reply_markup=kb)
+                return
+            settings = load_settings()
+            settings["start_gif"] = message.animation.file_id
+            save_settings(settings)
+            await message.reply("✅ GIF для /start обновлён!", reply_markup=kb)
+            add_bot_log(f"Админ {user_id} обновил GIF /start")
+            del auth_steps[user_id]
+
+    except Exception:
+        err = traceback.format_exc()
+        add_bot_log(f"❌ ОШИБКА в fsm_handler (step={step}, user={user_id}): {err}")
+        try:
+            await message.reply(
+                "⚠️ Произошла ошибка при обработке. Админ уже увидит детали в логах бота.",
+                reply_markup=kb
+            )
+        except Exception:
+            pass
 
 
 # === ЗАПУСК ===
